@@ -1,14 +1,14 @@
-from dataclasses import dataclass
 from pathlib import Path
-import pickle
+from dataclasses import dataclass
 from typing import Optional
+import pickle
 
+from torch.utils.data import Dataset, DataLoader
+from torch.nn import Module
 from PIL import Image
 import numpy as np
 import numpy.typing as npt
 import cv2
-
-from utils import filter_vehicles_not_in_img, get_mask, cut_mask, get_hull
 
 hull_color = (0, 255, 0)
 true_gcp_color = (0, 0, 255)
@@ -30,26 +30,6 @@ class VehicleData:
     hull: Optional[npt.NDArray] = None
 
 
-def append_hull(image_seg: Image.Image, raw_data: list[dict]) -> list[dict]:
-    """Calculates the hull and appends it as a key to the raw_data instance.
-
-    Args:
-        image_seg (Image.Image): _description_
-        raw_data (list[dict]): _description_
-
-    Returns:
-        list[dict]: _description_
-    """
-    for vehicle in raw_data:
-        image_cropped = cut_mask(vehicle["bb"], image_seg)
-        mask = get_mask(vehicle["bb"], image_cropped, image_seg)
-        hull = get_hull(mask)
-        vehicle["hull"] = hull
-    return raw_data
-
-
-
-
 @dataclass
 class CameraImage:
     """Represents a single frame of the dataset.
@@ -60,8 +40,8 @@ class CameraImage:
     Returns:
         _type_: _description_
     """
-    image_pv: npt.NDArray  # [height, width, 3]
-    image_tv: npt.NDArray  # [height, width, 3]
+    image_pv: Path  # [height, width, 3]
+    image_tv: Path  # [height, width, 3]
 
     vehicles_pv: list[VehicleData]
     vehicles_tv: list[VehicleData]
@@ -108,34 +88,12 @@ class CameraImage:
 
 
 
-
-class Dataset:
-    frames: list[CameraImage]
-    homography: npt.NDArray  # [3, 3]
-
-    def __init__(self, dataset_path: Path, force_reload = False) -> None:
-        """Tries to load a preprocessed dataset from the given path.
-        If no preprocessed dataset is found, the dataset is loaded from the raw data.
-
-        Args:
-            dataset_path (Path): Path with the 'outputs' folder.
-
-        Raises:
-            FileNotFoundError: If no dataset is found at the given path.
-
-        Returns:
-            _type_: a list of CameraImage instances
-        """
-        dataset = []
+class PerspectiveView(Dataset):
+    def __init__(self, dataset_path: Path, transforms, target_transforms) -> None:
+        super().__init__()
         if not dataset_path.is_dir():
-            raise FileNotFoundError(
-                f"Dataset path {dataset_path} does not exist")
-
-        preprocessed_path = dataset_path / "preprocessed.pickle"
-        if preprocessed_path.is_file() and not force_reload:
-            print("Loading preprocessed dataset")
-            with open(preprocessed_path, "rb") as f:
-                return pickle.load(f)
+            raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
+        
         with open(dataset_path / "output/pv/data.pickle", "rb") as f:
             data_pv = pickle.load(f)
 
@@ -181,20 +139,7 @@ class Dataset:
             dataset.append(CameraImage(
                 image_pv, image_tv, vehicles_pv, vehicles_tv))
 
-        with open(preprocessed_path, "wb") as f:
-            pickle.dump(dataset, f)
-        return dataset
+        self.frames = dataset
+        self.homography = calculate_homography(dataset)
 
-     
-
-def test_get_dataset():
-    dataset_path = Path("../datasets/carla_dataset")
-    dataset = CameraImage.get_dataset(dataset_path)
-    assert len(dataset) == 100
-
-
-if __name__ == "__main__":
-    dataset = CameraImage.get_dataset(
-        Path("../datasets/more_angles"), force_reload=True)
-    instance = dataset[0].vehicles_pv[0]
-    print(type(instance.hull), type(instance.gcp), dataset[0].image_pv.dtype)
+        

@@ -1,0 +1,20 @@
+classifier,pipeline,train_mse,test_mse
+"MultiOutputRegressor(estimator=GradientBoostingRegressor(n_estimators=60,
+                                                         random_state=42))","Pipeline(steps=[('padhull', PadHull(shuffle=False)),
+                ('scaletoimage', ScaleToImage(height=480, width=640)),
+                ('flattencoordinates', FlattenCoordinates(n_coordinates=32)),
+                ('standardscaler', StandardScaler())])",0.421967913619319,28.011642864730163
+Ridge(random_state=42),"Pipeline(steps=[('padhull', PadHull(shuffle=False)),
+                ('scaletoimage', ScaleToImage(height=480, width=640)),
+                ('flattencoordinates', FlattenCoordinates(n_coordinates=32)),
+                ('standardscaler', StandardScaler())])",8.610868802589867,32.3569042547158
+"RegressorChain(base_estimator=GradientBoostingRegressor(n_estimators=60,
+                                                        random_state=42))","Pipeline(steps=[('padhull', PadHull(shuffle=False)),
+                ('scaletoimage', ScaleToImage(height=480, width=640)),
+                ('flattencoordinates', FlattenCoordinates(n_coordinates=32)),
+                ('standardscaler', StandardScaler())])",0.4162846822485854,32.83933595983162
+"DecisionTreeRegressor(max_depth=18, random_state=42)","Pipeline(steps=[('padhull', PadHull(shuffle=False)),
+                ('scaletoimage', ScaleToImage(height=480, width=640)),
+                ('flattencoordinates', FlattenCoordinates(n_coordinates=32)),
+                ('standardscaler', StandardScaler())])",0.0,63.075471698113205
+HardCodedEstimator(homography_path='homography_matrix.json'),,88.61487924082223,72.62113389430128

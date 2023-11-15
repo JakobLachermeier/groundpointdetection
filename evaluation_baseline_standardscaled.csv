@@ -1,0 +1,5 @@
+classifier,train_mse,test_mse
+MultiOutputRegressor(estimator=GradientBoostingRegressor()),0.05104470232608836,43.85589878401722
+Ridge(),8.058592568113985,44.46900878625951
+RegressorChain(base_estimator=GradientBoostingRegressor()),0.05104470232608836,45.25411632229253
+DecisionTreeRegressor(max_depth=20),0.0,67.83962264150944
