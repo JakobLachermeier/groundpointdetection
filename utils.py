@@ -1,5 +1,7 @@
+from functools import wraps
 import random
 import pickle
+import time
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
@@ -23,12 +25,16 @@ from pathlib import Path
 
 
 datapath = "../datasets/carla_dataset/"
-Data = namedtuple("Data", ["image_pv", "image_tv", "vehicles_pv", "vehicles_tv"])
+Data = namedtuple("Data", ["image_pv", "image_tv",
+                  "vehicles_pv", "vehicles_tv"])
 # psi vector = richtungsvector, #hull is in [height, width]
-VehicleData = namedtuple("VehicleData", ['id', 'gcp', 'psi', 'img', 'bb', 'hull', 'min_area_rect'])
+VehicleData = namedtuple(
+    "VehicleData", ['id', 'gcp', 'psi', 'img', 'bb', 'hull', 'min_area_rect'])
 
-TrainingImage = namedtuple("TrainingImage", ["image_pv_path", "image_tv_path", "vehicles_pv", "vehicles_tv"])
+TrainingImage = namedtuple("TrainingImage", [
+                           "image_pv_path", "image_tv_path", "vehicles_pv", "vehicles_tv"])
 TrainingInstance = namedtuple("TrainingInstance", ["gcp", "psi", "hull"])
+
 
 def is_vehicle_out_of_bounds(gcp, w=640, h=480):
     x, y = gcp
@@ -74,7 +80,10 @@ def get_mask(bb, image_cropped, image_seg):
     rgba, counts = np.unique(
         image_cropped.reshape(-1, 4), axis=0, return_counts=True)
     # Filter street
-    mask = ~np.all(rgba == np.array([1, 94, 110, 255]), axis=1)
+    mask = ~np.all((rgba == np.array([1, 94, 110, 255])) | 
+                   (rgba == np.array([1, 65, 111, 255])) |
+                   (rgba == np.array([1, 183, 117, 255]))
+                   , axis=1)
     rgba = rgba[mask]
     counts = counts[mask]
     target_value = rgba[np.argmax(counts)]
@@ -182,15 +191,15 @@ def get_data(ts: int, base_url: str = './', w: int = 640, h: int = 480):
     # vehicles_pv = [VehicleData(**vehicle) for vehicle in vehicles_pv]
     # vehicles_tv = [VehicleData(**vehicle) for vehicle in vehicles_tv]
 
-    
     return Data(image_pv, image_tv, np.array(vehicles_pv), np.array(vehicles_tv))
+
 
 def get_training_data(dataset_path: Path) -> list[TrainingInstance]:
     with open(dataset_path / "output/pv/data.pickle", "rb") as f:
         data_pv = pickle.load(f)
     with open(dataset_path / "output/tv/data.pickle", "rb") as f:
         data_tv = pickle.load(f)
-    
+
     assert data_pv.keys() == data_tv.keys()
 
     sample_image = Image.open(dataset_path / data_pv[1][0]["img"])
@@ -201,6 +210,7 @@ def get_training_data(dataset_path: Path) -> list[TrainingInstance]:
         pass
 
     return all_data
+
 
 def pad_to_n(hull: npt.NDArray, n_points: int = 32) -> npt.NDArray:
     """Pad hull to always have n_points coordinates
@@ -248,16 +258,17 @@ class PadHull(BaseEstimator, TransformerMixin):
             to_pad = self.n_points - hull.shape[0]
             assert (to_pad >= 0)  # "Can't remove points yet."
             if to_pad > 0:
-                point_indices = np.random.randint(0, hull.shape[0] - 2, size=to_pad)
+                point_indices = np.random.randint(
+                    0, hull.shape[0] - 2, size=to_pad)
                 p1s = hull[point_indices]
                 p2s = hull[point_indices+1]
                 new_points = p2s + ((p1s-p2s) / 2)
                 hull = np.vstack((hull, new_points))
             if self.shuffle:
-                np.random.shuffle(hull) # shuffle points
+                np.random.shuffle(hull)  # shuffle points
             X_padded[i] = hull
         return X_padded
-    
+
 
 class ScaleToImage(BaseEstimator, TransformerMixin):
     def __init__(self, width: int, height: int) -> None:
@@ -265,29 +276,26 @@ class ScaleToImage(BaseEstimator, TransformerMixin):
         self.width = width
         self.height = height
 
-
     def fit(self, X):
         return self
-    
-    def transform(self, X):
-        image_dimensions = np.array([self.height, self.width]).reshape(1,2)
-        return X / image_dimensions
 
+    def transform(self, X):
+        image_dimensions = np.array([self.height, self.width]).reshape(1, 2)
+        return X / image_dimensions
 
 
 class FlattenCoordinates(BaseEstimator, TransformerMixin):
     def __init__(self, n_coordinates: int) -> None:
         super().__init__()
         self.n_coordinates = n_coordinates
-        
 
     def fit(self, X):
         return self
-    
+
     def transform(self, X):
         # flatten all coordinates so they can fit into the models
         return X.reshape(-1, self.n_coordinates*2)
-    
+
 
 def plot_predictions(data: Data, classifier: Pipeline, pipeline: Pipeline | None) -> Figure:
     """Plots hull, true groundpoint and predicted groundpoint
@@ -297,38 +305,44 @@ def plot_predictions(data: Data, classifier: Pipeline, pipeline: Pipeline | None
         true_gp (npt.ArrayLike): GP coordinates
         classifier (_type_): Classifier to call predict() on
     """
-    fig, axis = plt.subplots(figsize=(17,17))
+    fig, axis = plt.subplots(figsize=(17, 17))
     fig.set_frameon(False)
     axis.spines['top'].set_visible(False)
     axis.spines['right'].set_visible(False)
     axis.imshow(data.image_pv)
 
     for vehicle in data.vehicles_pv:
-        hull = vehicle["hull"].copy() # copy otherwise the underlying data is mutated
+        # copy otherwise the underlying data is mutated
+        hull = vehicle["hull"].copy()
         true_gp = vehicle["gcp"]
 
         if pipeline:
             to_predict = pipeline.transform([hull])
         else:
             to_predict = [hull]
-        predicted_gp = classifier.predict(to_predict) #[1, 2]
+        predicted_gp = classifier.predict(to_predict)  # [1, 2]
 
         predicted_gp = predicted_gp[0]
         error = mean_squared_error(true_gp, predicted_gp)
-        axis.scatter(predicted_gp[0], predicted_gp[1], color="red", label="Predicted gcp")
+        axis.scatter(predicted_gp[0], predicted_gp[1],
+                     color="red", label="Predicted gcp")
 
-        hull[:, [0, 1]] = hull[:, [1, 0]] # swap coordinates
-        hull = np.vstack((hull, hull[0])) # otherwise the connection between the first and last point is not plotted
+        hull[:, [0, 1]] = hull[:, [1, 0]]  # swap coordinates
+        # otherwise the connection between the first and last point is not plotted
+        hull = np.vstack((hull, hull[0]))
 
+        axis.scatter(hull[:, 0], hull[:, 1], marker='o',
+                     color="blue", linewidth=0.3)
+        axis.scatter(true_gp[0], true_gp[1], marker="*",
+                     color="green", label="True gcp")
 
-        axis.scatter(hull[:, 0], hull[:, 1], marker='o', color="blue", linewidth=0.3)
-        axis.scatter(true_gp[0], true_gp[1], marker="*", color="green", label="True gcp")
-
-        line_collection = LineCollection(hull[np.newaxis, :, :], colors="k", linestyle="solid")
+        line_collection = LineCollection(
+            hull[np.newaxis, :, :], colors="k", linestyle="solid")
         axis.add_collection(line_collection)
         axis.set_axis_off()
-    
+
     return fig
+
 
 def fit_and_score(classifiers: list[tuple[Pipeline, Pipeline | None]], X, y, random_state: int) -> list[dict]:
     """Fits every model and calculates the respective test mean squared error
@@ -344,15 +358,16 @@ def fit_and_score(classifiers: list[tuple[Pipeline, Pipeline | None]], X, y, ran
         "train_mse": train mean squared error, "test_mse": test mean squared error}
     """
     eval_data = []
-    
+
     for classifier, pipeline in tqdm(classifiers):
         if pipeline:
             X_transformed = pipeline.fit_transform(X.copy())
         else:
             X_transformed = X.copy()
-        
-        X_train, X_test, y_train, y_test = train_test_split(X_transformed, y, train_size=0.8, random_state=random_state)
-        
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_transformed, y, train_size=0.8, random_state=random_state)
+
         classifier.fit(X_train, y_train)
 
         y_pred_train = classifier.predict(X_train)
@@ -366,10 +381,11 @@ def fit_and_score(classifiers: list[tuple[Pipeline, Pipeline | None]], X, y, ran
                           "train_mse": train_mse,
                           "test_mse": test_mse,
                           })
-        
+
     return sorted(eval_data, key=lambda x: x["test_mse"])
 
-def predict_and_plot(hull: npt.NDArray, true_gcp: npt.NDArray, image_size: tuple[int, int]|None,  predicted_gcp: np.ndarray|None = None):
+
+def predict_and_plot(hull: npt.NDArray, true_gcp: npt.NDArray, image_size: tuple[int, int] | None,  predicted_gcp: np.ndarray | None = None):
     """Plots hull, true and predicted gcp
 
     Args:
@@ -391,10 +407,12 @@ def predict_and_plot(hull: npt.NDArray, true_gcp: npt.NDArray, image_size: tuple
 
     axis.scatter(points[:, 0], points[:, 1], marker='o',
                  color="blue", linewidth=0.3, label="Hull coordinates")
-    axis.scatter(true_gcp[1], true_gcp[0], color="green", marker="*", label="True gcp")
+    axis.scatter(true_gcp[1], true_gcp[0], color="green",
+                 marker="*", label="True gcp")
 
     if predicted_gcp is not None:
-        axis.scatter(predicted_gcp[1], predicted_gcp[0], color="red", label="Predicted gcp")
+        axis.scatter(predicted_gcp[1], predicted_gcp[0],
+                     color="red", label="Predicted gcp")
 
     lines = [hull.points[simplex] for simplex in hull.simplices]
     line_collection = LineCollection(lines, colors="k", linestyle="solid")
@@ -402,8 +420,9 @@ def predict_and_plot(hull: npt.NDArray, true_gcp: npt.NDArray, image_size: tuple
     axis.legend(loc="lower left")
     axis.set_title("Hull and ground contact point(gcp)")
     axis.spines[["right", "top"]].set_visible(False)
-    #axis.set_axis_off()
+    # axis.set_axis_off()
     return axis
+
 
 class ShiftedCenter(BaseEstimator):
     """Takes the center of the given hull and shifts it by the fitted vector.
@@ -411,6 +430,7 @@ class ShiftedCenter(BaseEstimator):
     Args:
         BaseEstimator (_type_): _description_
     """
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -425,18 +445,18 @@ class ShiftedCenter(BaseEstimator):
             y (np.ndarray): _description_
         """
         y = y.copy()
-        y[:, [0, 1]] = y[:, [1, 0]] #swap y coordinates to match hull coords
+        y[:, [0, 1]] = y[:, [1, 0]]  # swap y coordinates to match hull coords
         deltas = np.empty((len(X), 2))
         for i, hull in enumerate(X):
             center = hull.mean(axis=0)
             gcp = y[i]
             delta = gcp - center
             deltas[i] = delta
-        
+
         self.delta = deltas.mean(axis=0)
         self.is_fitted_ = True
         return self
-    
+
     def predict(self, X: npt.NDArray) -> np.ndarray:
         check_is_fitted(self, "is_fitted_")
         predictions = np.empty((len(X), 2))
@@ -445,8 +465,10 @@ class ShiftedCenter(BaseEstimator):
             gcp = self.delta + center
             predictions[i] = gcp
 
-        predictions[:, [0, 1]] = predictions[:, [1, 0]] # swap back to expected coordinates
+        # swap back to expected coordinates
+        predictions[:, [0, 1]] = predictions[:, [1, 0]]
         return predictions
+
 
 class HardCodedEstimator(BaseEstimator):
     def __init__(self, homography_path: str, scaling_factor: int = 1) -> None:
@@ -455,13 +477,14 @@ class HardCodedEstimator(BaseEstimator):
         self.scaling_factor = scaling_factor
 
     def fit(self, X, y):
-        self.position_estimator_ = PositionEstimation(self.homography_path, self.scaling_factor)
+        self.position_estimator_ = PositionEstimation(
+            self.homography_path, self.scaling_factor)
         self.is_fitted_ = True
-        label = 2 # car
+        label = 2  # car
         self.track_ = Track(None, label, 1, 1, 1)
         return self
-    
-    def predict(self, X:list[list[tuple[float, float]]]):
+
+    def predict(self, X: list[list[tuple[float, float]]]):
         """X is a list of hulls
 
         Args:
@@ -470,7 +493,19 @@ class HardCodedEstimator(BaseEstimator):
         check_is_fitted(self, "is_fitted_")
         predictions = np.empty((len(X), 2))
         for i, hull in enumerate(X):
-            point, _, _ = self.position_estimator_.map_entity_and_return_relevant_points(self.track_, hull)
+            point, _, _ = self.position_estimator_.map_entity_and_return_relevant_points(
+                self.track_, hull)
             point = self.position_estimator_.invert_homography(point)
             predictions[i] = point
         return predictions
+
+
+#type ignore
+def time_fn(f):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        start = time.time()
+        result = f(*args, **kwargs)
+        end = time.time()
+        print(f"{f.__name__} took: {end-start:.2f}s")
+        return result

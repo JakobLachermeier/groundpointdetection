@@ -1,14 +1,15 @@
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
 import pickle
+from typing import Optional
+import os
 
-from torch.utils.data import Dataset, DataLoader
-from torch.nn import Module
 from PIL import Image
 import numpy as np
 import numpy.typing as npt
 import cv2
+
+from utils import filter_vehicles_not_in_img, get_mask, cut_mask, get_hull
 
 hull_color = (0, 255, 0)
 true_gcp_color = (0, 0, 255)
@@ -30,6 +31,25 @@ class VehicleData:
     hull: Optional[npt.NDArray] = None
 
 
+def append_hull(image_seg: Image.Image, raw_data: list[dict]) -> list[dict]:
+    """Calculates the hull and appends it as a key to the raw_data instance.
+
+    Args:
+        image_seg (Image.Image): _description_
+        raw_data (list[dict]): _description_
+
+    Returns:
+        list[dict]: _description_
+    """
+    for vehicle in raw_data:
+        image_cropped = cut_mask(vehicle["bb"], image_seg)
+        mask = get_mask(vehicle["bb"], image_cropped, image_seg)
+        hull = get_hull(mask)
+        vehicle["hull"] = hull
+
+    return raw_data
+
+
 @dataclass
 class CameraImage:
     """Represents a single frame of the dataset.
@@ -40,8 +60,8 @@ class CameraImage:
     Returns:
         _type_: _description_
     """
-    image_pv: Path  # [height, width, 3]
-    image_tv: Path  # [height, width, 3]
+    image_pv: npt.NDArray  # [height, width, 3]
+    image_tv: npt.NDArray  # [height, width, 3]
 
     vehicles_pv: list[VehicleData]
     vehicles_tv: list[VehicleData]
@@ -87,13 +107,45 @@ class CameraImage:
         return image_tv
 
 
+def calculate_homography(frames: list[CameraImage]) -> npt.NDArray:
+    """Calculates the homography matrix for the given frames.
 
-class PerspectiveView(Dataset):
-    def __init__(self, dataset_path: Path, transforms, target_transforms) -> None:
-        super().__init__()
+    Args:
+        frames (list[CameraImage]): _description_
+
+    Returns:
+        npt.NDArray: _description_
+    """
+    gcp_pv = [vehicle.gcp for frame in frames for vehicle in frame.vehicles_pv]
+    gcp_tv = [vehicle.gcp for frame in frames for vehicle in frame.vehicles_tv]
+    gcp_pv = np.array(gcp_pv).astype(np.float32)
+    gcp_tv = np.array(gcp_tv).astype(np.float32)
+    homography, _ = cv2.findHomography(gcp_pv, gcp_tv)
+    return homography
+
+
+class PerspectiveViewDataset:
+    frames: list[CameraImage]
+    homography: npt.NDArray  # [3, 3]
+
+    def __init__(self, dataset_path: Path):
+        """Tries to load a preprocessed dataset from the given path.
+        If no preprocessed dataset is found, the dataset is loaded from the raw data.
+
+        Args:
+            dataset_path (Path): Path with the 'outputs' folder.
+
+        Raises:
+            FileNotFoundError: If no dataset is found at the given path.
+
+        Returns:
+            _type_: a list of CameraImage instances
+        """
+        dataset = []
         if not dataset_path.is_dir():
-            raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
-        
+            raise FileNotFoundError(
+                f"Dataset path {dataset_path} does not exist")
+
         with open(dataset_path / "output/pv/data.pickle", "rb") as f:
             data_pv = pickle.load(f)
 
@@ -117,8 +169,11 @@ class PerspectiveView(Dataset):
             height, width, _ = image_pv.shape
             raw_data_pv = filter_vehicles_not_in_img(
                 raw_data_pv, width, height)
-            append_hull(image_seg, raw_data_pv)
-
+            try:
+                append_hull(image_seg, raw_data_pv)
+            except ValueError:
+                #print(f"Error while appending hull. key: {key}, raw_pv: {raw_data_pv}") 
+                continue 
             vehicle_ids = [vehicle["id"]
                            for vehicle in raw_data_pv]  # only use filtered vehicles
             raw_data_tv = [
@@ -142,4 +197,41 @@ class PerspectiveView(Dataset):
         self.frames = dataset
         self.homography = calculate_homography(dataset)
 
-        
+    @staticmethod
+    def load_or_create(dataset_path: Path, force_reload=False) -> "PerspectiveViewDataset":
+        if os.path.exists(dataset_path / "preprocessed.pickle") and not force_reload:
+            with open(dataset_path / "preprocessed.pickle", "rb") as f:
+                return pickle.load(f)
+
+        dataset = PerspectiveViewDataset(dataset_path)
+        with open(dataset_path / "preprocessed.pickle", "wb") as f:
+            pickle.dump(dataset, f)
+        return dataset
+
+    def __len__(self):
+        return len(self.frames)
+
+
+
+
+
+
+
+def test_all_datasets():
+    for dataset in ["../datasets/camera1",
+                    "../datasets/camera2",
+                    "../datasets/camera3",
+                    "../datasets/camera4",
+                    "../datasets/more_angles",
+                    "../datasets/carla_dataset",]:
+        print(f"Testing {dataset}")
+        dataset_path = Path(dataset)
+        dataset = PerspectiveViewDataset.load_or_create(dataset_path, True)
+        dataset = PerspectiveViewDataset.load_or_create(dataset_path)
+
+if __name__ == "__main__":
+    dataset = PerspectiveViewDataset.load_or_create(
+        Path("../datasets/carla_dataset"), force_reload=True)
+    instance = dataset.frames[0].vehicles_pv[0]
+    print(type(instance.hull), type(instance.gcp),
+          dataset.frames[0].image_pv.dtype)
