@@ -300,7 +300,6 @@ class PositionEstimation:
             H = json.load(H_file)
             H = np.array(H)
             self.Homography_Matrix = H
-            self.Homography_Matrix = H
             self.inv_Homography_Matrix = np.linalg.inv(self.Homography_Matrix)
             self.scale_factor = scale_factor
             self.obj_id = None
@@ -341,7 +340,9 @@ class PositionEstimation:
         warped_point *= scaling
         return (warped_point[1], warped_point[0]) # swap coords to line up with data
 
-
+    def set_homography(self, homography: np.ndarray) -> None:
+        self.Homography_Matrix = homography
+        self.inv_Homography_Matrix = np.linalg.inv(self.Homography_Matrix)
 
 def map_entity_and_return_relevant_points(message, H_camera):
 

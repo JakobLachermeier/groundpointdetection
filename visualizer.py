@@ -6,21 +6,22 @@ import uuid
 
 import numpy as np
 import numpy.typing as npt
-from dataloader import CarlaDataset, project_points, load_all_datasets_in_folder
+from dataloader import CarlaDataset, project_points, load_datasets
 from dataloader import Instance  # type: ignore needed to unpickle
 import joblib  # type: ignore
 import cv2
 from typing import Literal
 
-
-classifiers = joblib.load("models/classifiers.joblib")  # type: ignore
-classifiers = {str(classifier["classifier"])
-                   : classifier for classifier in classifiers}
+from utils import HardCodedEstimator
 
 
-data_path = pathlib.Path("../datasets")
+regressors = joblib.load("regressors.joblib")  # type: ignore
+regressors = {str(classifier["classifier"])               : classifier for classifier in regressors}
+
+
+data_path = "../datasets"
 all_datasets = {
-    dataset.name: dataset for dataset in load_all_datasets_in_folder(data_path)}
+    dataset.name: dataset for dataset in load_datasets(data_path, ["camera1", "camera2", "camera3", "camera4", "more_angles", "test_instances"])}
 
 
 def save_img_array_to_cache(
@@ -109,6 +110,12 @@ def set_dataset(dataset_name: str, session_state: SessionState):
     min_ts = dataset.timestamps[0]
     max_ts = dataset.timestamps[-1]
     session_state.current_dataset = dataset
+
+    # update homography for hardcoded estimators
+    for regressor in regressors.values():
+        if isinstance(regressor["classifier"], HardCodedEstimator):
+            regressor["classifier"].set_homography(dataset.homography)
+
     return imave_pv, image_tv, imave_pv, image_tv, gradio.Slider(min_ts, max_ts, interactive=True, value=0), session_state
 
 
@@ -133,21 +140,23 @@ with gradio.Blocks() as demo:
 
         with gradio.Row():
             model_1 = gradio.Radio(
-                list(classifiers.keys()), label="Ground point regressor 1")
+                list(regressors.keys()), label="Ground point regressor 1")
 
             # type: ignore
             @model_1.change(inputs=[model_1, session_state], outputs=session_state)
             def change_model_1(m: str, session_state: SessionState) -> SessionState:
-                session_state.classifier_1 = classifiers[m]
+                new_regressor = regressors[m]
+                session_state.classifier_1 = new_regressor
                 return session_state
 
             model_2 = gradio.Radio(
-                list(classifiers.keys()), label="Ground point regressor 2")
+                list(regressors.keys()), label="Ground point regressor 2")
 
             # type: ignore
             @model_2.change(inputs=[model_2, session_state], outputs=session_state)
             def change_model_2(m: str, session_state: SessionState):
-                session_state.classifier_2 = classifiers[m]
+                new_regressor = regressors[m]
+                session_state.classifier_2 = new_regressor
                 return session_state
 
         with gradio.Row():

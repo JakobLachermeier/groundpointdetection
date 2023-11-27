@@ -80,10 +80,9 @@ def get_mask(bb, image_cropped, image_seg):
     rgba, counts = np.unique(
         image_cropped.reshape(-1, 4), axis=0, return_counts=True)
     # Filter street
-    mask = ~np.all((rgba == np.array([1, 94, 110, 255])) | 
+    mask = ~np.all((rgba == np.array([1, 94, 110, 255])) |
                    (rgba == np.array([1, 65, 111, 255])) |
-                   (rgba == np.array([1, 183, 117, 255]))
-                   , axis=1)
+                   (rgba == np.array([1, 183, 117, 255])), axis=1)
     rgba = rgba[mask]
     counts = counts[mask]
     target_value = rgba[np.argmax(counts)]
@@ -252,7 +251,7 @@ class PadHull(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        X_padded = np.empty((len(X), 32, 2))
+        X_padded = np.empty((len(X), self.n_points, 2))
         for i, hull in enumerate(X):
             hull = np.array(hull)
             to_pad = self.n_points - hull.shape[0]
@@ -344,7 +343,7 @@ def plot_predictions(data: Data, classifier: Pipeline, pipeline: Pipeline | None
     return fig
 
 
-def fit_and_score(classifiers: list[tuple[Pipeline, Pipeline | None]], X, y, random_state: int) -> list[dict]:
+def fit_and_score(regressors: list[tuple[Pipeline, Pipeline | None]], X, y, random_state: int) -> list[dict]:
     """Fits every model and calculates the respective test mean squared error
 
     Args:
@@ -359,7 +358,7 @@ def fit_and_score(classifiers: list[tuple[Pipeline, Pipeline | None]], X, y, ran
     """
     eval_data = []
 
-    for classifier, pipeline in tqdm(classifiers):
+    for classifier, pipeline in tqdm(regressors):
         if pipeline:
             X_transformed = pipeline.fit_transform(X.copy())
         else:
@@ -476,6 +475,14 @@ class HardCodedEstimator(BaseEstimator):
         self.homography_path = homography_path
         self.scaling_factor = scaling_factor
 
+    def set_homography(self, homography: npt.NDArray[np.float64]):
+        check_is_fitted(self, "is_fitted_")
+        self.position_estimator_.set_homography(homography)
+
+    def get_homography(self):
+        check_is_fitted(self, "is_fitted_")
+        return self.position_estimator_.Homography_Matrix
+
     def fit(self, X, y):
         self.position_estimator_ = PositionEstimation(
             self.homography_path, self.scaling_factor)
@@ -484,7 +491,7 @@ class HardCodedEstimator(BaseEstimator):
         self.track_ = Track(None, label, 1, 1, 1)
         return self
 
-    def predict(self, X: list[list[tuple[float, float]]]):
+    def predict(self, X: list[npt.NDArray[np.float32]]):
         """X is a list of hulls
 
         Args:
@@ -493,19 +500,11 @@ class HardCodedEstimator(BaseEstimator):
         check_is_fitted(self, "is_fitted_")
         predictions = np.empty((len(X), 2))
         for i, hull in enumerate(X):
+            # swap x and y coordinates
+            hull = hull.copy()
+            hull[:,[0,1]] = hull[:,[1,0]]
             point, _, _ = self.position_estimator_.map_entity_and_return_relevant_points(
                 self.track_, hull)
             point = self.position_estimator_.invert_homography(point)
             predictions[i] = point
         return predictions
-
-
-#type ignore
-def time_fn(f):
-    @wraps(f)
-    def wrap(*args, **kwargs):
-        start = time.time()
-        result = f(*args, **kwargs)
-        end = time.time()
-        print(f"{f.__name__} took: {end-start:.2f}s")
-        return result

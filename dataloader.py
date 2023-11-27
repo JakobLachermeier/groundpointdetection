@@ -1,6 +1,6 @@
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import NamedTuple, Any
 import pickle
 import logging
 import cv2
@@ -65,6 +65,11 @@ class Frame:
             used_radius *= 2
             used_line_thickness *= 2
         for vehicle in self.vehicles:
+            hull = vehicle.hull_pv
+            #hull = np.vstack([hull, hull[0]]).astype(np.int32)
+            # swap hull axis
+            hull[:, [0, 1]] = hull[:, [1, 0]]
+            hull = hull.reshape(-1, 1, 2)
             color = self.id_to_color[vehicle.id]
             cv2.circle(image_pv, tuple(vehicle.gcp_pv), used_radius, color, -1)
             cv2.circle(image_tv, tuple(vehicle.gcp_tv), used_radius, color, -1)
@@ -72,6 +77,7 @@ class Frame:
                 vehicle.psi_pv), color, used_line_thickness)
             cv2.arrowedLine(image_tv, tuple(vehicle.gcp_tv), tuple(
                 vehicle.psi_tv), color, used_line_thickness)
+            cv2.polylines(image_pv, [hull], True, color, used_line_thickness)
         return image_pv, image_tv
 
     @property
@@ -90,22 +96,27 @@ class Frame:
             used_line_thickness *= 2
         for prediction, vehicle in zip(predictions, self.vehicles):
             color: tuple[int, int, int] = self.id_to_color[vehicle.id]
-            print(prediction)
             cv2.drawMarker(image, prediction, color,
                            cv2.MARKER_STAR, used_radius*3, used_line_thickness)
         return image
 
 
-class CarlaDataset(Dataset[Instance]):
+FrameSize = NamedTuple("FrameSize", [("width", int), ("height", int)])
+
+
+class CarlaDataset(Dataset): # type: ignore
     name: str
+    base_path: Path
     instances: list[Instance]
     camera_metadata: Any
     homography: npt.NDArray[np.float_]
     timestamps: list[int]
+    frame_size: FrameSize
 
-    def __init__(self, instances: list[Instance], camera_metadata: Any, name: str, homography: npt.NDArray[np.float_]) -> None:
+    def __init__(self, instances: list[Instance], camera_metadata: Any, name: str, homography: npt.NDArray[np.float_], base_path: Path) -> None:
         super().__init__()
         self.name = name
+        self.base_path = base_path
         self.instances = instances
         self.camera_metadata = camera_metadata
         self.homography = homography
@@ -134,7 +145,7 @@ class CarlaDataset(Dataset[Instance]):
             raise FileNotFoundError(
                 f"Dataset path {dataset_path} does not exist")
 
-        if (dataset_path / "instances.pickle").is_file() and not force_reload:
+        if (dataset_path / "output/instances.pickle").is_file() and not force_reload:
             return cls.load_new_format(datadir)
         else:
             return cls.load_old_format(datadir)
@@ -147,15 +158,16 @@ class CarlaDataset(Dataset[Instance]):
             raise FileNotFoundError(
                 f"Dataset path {dataset_path} does not exist")
 
-        with open(dataset_path / "instances.pickle", "rb") as f:
+        with open(dataset_path / "output/instances.pickle", "rb") as f:
             instances = pickle.load(f)
 
-        homography = cls.load_or_calculate_homography(dataset_path / "homography.pickle", instances)
+        homography = cls.load_or_calculate_homography(
+            dataset_path / "homography.pickle", instances)
 
         # TODO load camera metadata
         # with open(dataset_path / "camera_metadata.pickle", "rb") as f:
         #     self.camera_metadata = pickle.load(f)
-        return cls(instances, None, dataset_path.name, homography)
+        return cls(instances, None, dataset_path.name, homography, dataset_path)
 
     @classmethod
     def load_old_format(cls, datadir: str) -> "CarlaDataset":
@@ -206,12 +218,12 @@ class CarlaDataset(Dataset[Instance]):
                     logging.warning(
                         f"Could not calculate hull for vehicle with bounding box: {bb_pv}")
                     continue
-                image_pv = dataset_path / vehicle_pv["img"]
+                image_pv = vehicle_pv["img"]
 
                 gcp_tv = np.array(vehicle_tv["gcp"])
                 psi_tv = np.array(vehicle_tv["psi"])
                 bb_tv = np.array(vehicle_tv["bb"])
-                image_tv = dataset_path / vehicle_tv["img"]
+                image_tv = vehicle_tv["img"]
 
                 assert vehicle_pv["id"] == vehicle_tv["id"]
                 vehicle_id = vehicle_pv["id"]
@@ -223,10 +235,10 @@ class CarlaDataset(Dataset[Instance]):
         homography = cls.load_or_calculate_homography(
             homography_file, instances)
 
-        with open(dataset_path / "instances.pickle", "wb") as f:
+        with open(dataset_path / "output/instances.pickle", "wb") as f:
             pickle.dump(instances, f)
 
-        return cls(instances, None, dataset_path.name, homography)
+        return cls(instances, None, dataset_path.name, homography, dataset_path)
 
     @classmethod
     def load_or_calculate_homography(cls, homography_path: Path, instances: list[Instance]) -> npt.NDArray[np.float_]:
@@ -246,6 +258,13 @@ class CarlaDataset(Dataset[Instance]):
         gcp_tv = [instance.gcp_tv for instance in instances]
         gcp_pv = np.array(gcp_pv).astype(np.float32)
         gcp_tv = np.array(gcp_tv).astype(np.float32)
+        # convex_hull_pv_indices = cv2.convexHull(gcp_pv, returnPoints=False)
+        # convex_hull_pv_indices = np.array(convex_hull_pv_indices).squeeze()
+    
+        # assert convex_hull_pv_indices.ndim == 1
+        # gcp_pv = gcp_pv[convex_hull_pv_indices]
+        # gcp_tv = gcp_tv[convex_hull_pv_indices]
+
         homography, _ = cv2.findHomography(gcp_pv, gcp_tv)
         return np.array(homography)
 
@@ -260,15 +279,45 @@ class CarlaDataset(Dataset[Instance]):
             raise ValueError(f"Timestamp {ts} is not in the dataset.")
         instances = [
             instance for instance in self.instances if instance.ts == ts]
-        image_pv = cv2.imread(str(instances[0].image_pv))
-        image_tv = cv2.imread(str(instances[0].image_tv))
+        image_pv = cv2.imread(str(self.base_path / instances[0].image_pv))
+        image_tv = cv2.imread(str(self.base_path / instances[0].image_tv))
         # image_pv = cv2.cvtColor(image_pv, cv2.COLOR_BGR2RGB)
         # image_tv = cv2.cvtColor(image_tv, cv2.COLOR_BGR2RGB)
 
         return Frame(ts, np.asarray(image_pv), np.asarray(image_tv), instances, self.id_to_color)
 
+    def get_instance(self, index: int) -> Instance:
+        return self.instances[index]
+
+    def __getitem__(self, index: int):
+        return self.instances[index].hull_pv, self.instances[index].gcp_pv
+
     def __repr__(self) -> str:
         return f"CarlaDataset(name={self.name}, n_instances={len(self.instances)})"
+
+    # shape (n, 2)
+    def project_points_from_pv(self, points: npt.NDArray[np.uint]) -> npt.NDArray[np.float_]:
+        """Projects the given points from the perspective view to the top view.
+
+        Args:
+            points (npt.NDArray[np.uint]): 
+
+        Returns:
+            npt.NDArray[np.float_]: 
+        """
+        return project_points(points, self.homography)
+
+    # shape (n, 2)
+    def project_points_from_tv(self, points: npt.NDArray[np.uint]) -> npt.NDArray[np.float_]:
+        """Projects the given points from the top view to the perspective view.
+
+        Args:
+            points (npt.NDArray[np.uint]): 
+
+        Returns:
+            npt.NDArray[np.float_]: 
+        """
+        return project_points(points, np.linalg.inv(self.homography))
 
 
 def calculate_hull(image_seg: Image.Image, bounding_box: npt.NDArray[np.int_]) -> npt.NDArray[np.int_]:
@@ -314,6 +363,17 @@ def load_all_datasets_in_folder(folder: Path) -> list[CarlaDataset]:
                 logging.warning(f"Could not load dataset {dataset}")
     return datasets
 
+def load_datasets(dataset_folder: str, dataset_names: list[str]) -> list[CarlaDataset]:
+    datasets: list[CarlaDataset] = []
+    for dataset_name in dataset_names:
+        dataset_path = Path(dataset_folder) / dataset_name
+        if dataset_path.is_dir():
+            try:
+                datasets.append(CarlaDataset.load_dataset(str(dataset_path)))
+            except FileNotFoundError:
+                logging.warning(f"Could not load dataset {dataset_path}")
+    return datasets
+
 
 def test_load_old_format():
     CarlaDataset.load_old_format("../datasets/carla_dataset")
@@ -330,9 +390,9 @@ if __name__ == "__main__":
     # for dataset in datasets:
     #     CarlaDataset.load_old_format(dataset)
 
-    dataset = CarlaDataset.load_dataset("../datasets/carla_dataset")
-    print(dataset)
-    frame = dataset.get_frame(45)
+    dataset = CarlaDataset.load_new_format("../datasets/test_instances")
+    frame = dataset.get_frame(1)
     image_pv, image_tv = frame.annotate_images()
+    # image = cv2.imread("../datasets/mini/"+frame.perspective_view)
     plt.imshow(image_pv)  # type: ignore
     plt.show()  # type: ignore
