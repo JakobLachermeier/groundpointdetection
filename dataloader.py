@@ -65,7 +65,7 @@ class Frame:
             used_radius *= 2
             used_line_thickness *= 2
         for vehicle in self.vehicles:
-            hull = vehicle.hull_pv
+            hull = vehicle.hull_pv.copy()
             #hull = np.vstack([hull, hull[0]]).astype(np.int32)
             # swap hull axis
             hull[:, [0, 1]] = hull[:, [1, 0]]

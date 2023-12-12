@@ -3,10 +3,11 @@ from attr import dataclass
 import gradio  # type: ignore
 import pathlib
 import uuid
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-from dataloader import CarlaDataset, project_points, load_datasets
+from dataloader import CarlaDataset, project_points, load_datasets, load_all_datasets_in_folder
 from dataloader import Instance  # type: ignore needed to unpickle
 import joblib  # type: ignore
 import cv2
@@ -16,12 +17,17 @@ from utils import HardCodedEstimator
 
 
 regressors = joblib.load("regressors.joblib")  # type: ignore
-regressors = {str(classifier["classifier"])               : classifier for classifier in regressors}
+regressors = {str(classifier["classifier"])
+                  : classifier for classifier in regressors}
 
 
 data_path = "../datasets"
 all_datasets = {
-    dataset.name: dataset for dataset in load_datasets(data_path, ["camera1", "camera2", "camera3", "camera4", "more_angles", "test_instances"])}
+    dataset.name: dataset for dataset in load_datasets(data_path, ["train1", "train2", "train3", "train4", "validation"])}
+# all_datasets = {
+#    dataset.name: dataset for dataset in load_all_datasets_in_folder(Path(data_path) / "bulk_test_sets")}
+# all_datasets = {
+#     dataset.name: dataset for dataset in load_datasets("./", ["carla_datagen"])}
 
 
 def save_img_array_to_cache(
@@ -51,7 +57,7 @@ def process_frame(frame_number: int, session_state: SessionState):
     if not current_dataset:
         raise gradio.Error("Load dataset first")
     current_frame = current_dataset.get_frame(frame_number)
-    hulls = current_frame.hulls
+    hulls = current_frame.hulls.copy()
     predictions_1 = None
     predictions_2 = None
     if classifier_1 is not None:
@@ -63,6 +69,7 @@ def process_frame(frame_number: int, session_state: SessionState):
         else:
             preprocessed = hulls
         predictions_1 = classifier.predict(preprocessed)  # type: ignore
+
     if classifier_2 is not None:
         pipeline = classifier_2["pipeline"]  # type: ignore
         classifier = classifier_2["classifier"]  # type: ignore
@@ -98,7 +105,7 @@ def process_frame(frame_number: int, session_state: SessionState):
     return pv_1, tv_1, pv_2, tv_2
 
 
-def set_dataset(dataset_name: str, session_state: SessionState):
+def set_dataset(dataset_name: str, session_state: SessionState) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8], npt.NDArray[np.uint8], gradio.Slider, SessionState]:
     print(f"Loading dataset {dataset_name}")
     try:
         dataset = all_datasets[dataset_name]
@@ -154,7 +161,7 @@ with gradio.Blocks() as demo:
 
             # type: ignore
             @model_2.change(inputs=[model_2, session_state], outputs=session_state)
-            def change_model_2(m: str, session_state: SessionState):
+            def change_model_2(m: str, session_state: SessionState) -> SessionState:
                 new_regressor = regressors[m]
                 session_state.classifier_2 = new_regressor
                 return session_state
@@ -176,4 +183,4 @@ with gradio.Blocks() as demo:
 
 if __name__ == "__main__":
     # demo.queue()
-    demo.launch(server_name="0.0.0.0")  # type: ignore
+    demo.launch(server_name="0.0.0.0", share=True)  # type: ignore

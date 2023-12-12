@@ -506,5 +506,5 @@ class HardCodedEstimator(BaseEstimator):
             point, _, _ = self.position_estimator_.map_entity_and_return_relevant_points(
                 self.track_, hull)
             point = self.position_estimator_.invert_homography(point)
-            predictions[i] = point
+            predictions[i] = (point[1], point[0])
         return predictions
