@@ -1,6 +1,6 @@
 from pathlib import Path
 from dataclasses import dataclass
-from typing import NamedTuple, Any
+from typing import Callable, NamedTuple, Any
 import pickle
 import logging
 import cv2
@@ -35,10 +35,10 @@ class Instance:
     id: int  # vehicle id from carla
     ts: int  # timestamp should also be the image name in seg, pv and tv folders
     # pv
-    gcp_pv: npt.NDArray[np.int_]  # [2,] Ground contact point
+    gcp_pv: npt.NDArray[np.int_]  # [2,] Ground contact point in (width, height)
     psi_pv: npt.NDArray[np.int_]  # [2,] point for the direction of the vehicle
     bb_pv: npt.NDArray[np.int_]   # [8, 2] # 3d bounding box of the vehicle
-    hull_pv: npt.NDArray[np.int_]  # [n, 2] # hull of the vehicle
+    hull_pv: npt.NDArray[np.int_]  # [n, 2] # hull of the vehicle in (height, width)
     image_pv: str        # path to the image
     # tv
     gcp_tv: npt.NDArray[np.int_]  # [2,] Ground contact point
@@ -73,10 +73,10 @@ class Frame:
             color = self.id_to_color[vehicle.id]
             cv2.circle(image_pv, tuple(vehicle.gcp_pv), used_radius, color, -1)
             cv2.circle(image_tv, tuple(vehicle.gcp_tv), used_radius, color, -1)
-            cv2.arrowedLine(image_pv, tuple(vehicle.gcp_pv), tuple(
-                vehicle.psi_pv), color, used_line_thickness)
-            cv2.arrowedLine(image_tv, tuple(vehicle.gcp_tv), tuple(
-                vehicle.psi_tv), color, used_line_thickness)
+            # cv2.arrowedLine(image_pv, tuple(vehicle.gcp_pv), tuple(
+            #     vehicle.psi_pv), color, used_line_thickness)
+            # cv2.arrowedLine(image_tv, tuple(vehicle.gcp_tv), tuple(
+            #     vehicle.psi_tv), color, used_line_thickness)
             cv2.polylines(image_pv, [hull], True, color, used_line_thickness)
         return image_pv, image_tv
 
@@ -84,7 +84,7 @@ class Frame:
     def hulls(self):
         return [vehicle.hull_pv for vehicle in self.vehicles]
 
-    def annotate_predictions(self, image: npt.NDArray[np.uint8], predictions: npt.NDArray[np.float_]):
+    def annotate_gcp_prediction(self, image: npt.NDArray[np.uint8], predictions: npt.NDArray[np.float_]):
         assert len(predictions) == len(self.vehicles)
         image = image.copy()
         predictions = predictions.astype(np.int_)
@@ -99,6 +99,23 @@ class Frame:
             cv2.drawMarker(image, prediction, color,
                            cv2.MARKER_STAR, used_radius*3, used_line_thickness)
         return image
+    
+    def annotate_psi_prediction(self, image: npt.NDArray[np.uint8], predicted_psi: npt.NDArray[np.float_], predicted_gcp: npt.NDArray[np.float_]):
+        assert len(predicted_psi) == len(self.vehicles) == len(predicted_gcp)
+        image = image.copy()
+        predicted_psi = predicted_psi.astype(np.int_)
+        predicted_gcp = predicted_gcp.astype(np.int_)
+        used_radius = radius
+        used_line_thickness = line_thickness
+        image_height, _image_width, _ = image.shape
+        if image_height == 1080:
+            used_radius *= 2
+            used_line_thickness *= 2
+        for psi_prediction, gcp_prediction, vehicle in zip(predicted_psi, predicted_gcp, self.vehicles):
+            color: tuple[int, int, int] = self.id_to_color[vehicle.id]
+            cv2.arrowedLine(image, tuple(gcp_prediction), tuple(
+                psi_prediction), color, used_line_thickness)
+        return image
 
 
 FrameSize = NamedTuple("FrameSize", [("width", int), ("height", int)])
@@ -112,6 +129,7 @@ class CarlaDataset(Dataset): # type: ignore
     homography: npt.NDArray[np.float_]
     timestamps: list[int]
     frame_size: FrameSize
+    transform: Callable | None 
 
     def __init__(self, instances: list[Instance], camera_metadata: Any, name: str, homography: npt.NDArray[np.float_], base_path: Path) -> None:
         super().__init__()
@@ -126,6 +144,7 @@ class CarlaDataset(Dataset): # type: ignore
         colors = distinctipy.get_colors(len(ids))  # type: ignore
         self.id_to_color = {id: distinctipy.get_rgb256(  # type: ignore
             color) for id, color in zip(ids, colors)}
+        self.transform = None
 
     @classmethod
     def load_dataset(cls, datadir: str, force_reload: bool = False) -> "CarlaDataset":
@@ -290,7 +309,13 @@ class CarlaDataset(Dataset): # type: ignore
         return self.instances[index]
 
     def __getitem__(self, index: int):
-        return self.instances[index].hull_pv, self.instances[index].gcp_pv
+        instance = self.instances[index]
+        if self.transform:
+            instance = self.transform(instance)
+        psi_vector = instance.psi_pv - instance.gcp_pv
+        normalized_psi_vector = psi_vector / np.linalg.norm(psi_vector)
+
+        return instance.hull_pv, instance.gcp_pv, normalized_psi_vector
 
     def __repr__(self) -> str:
         return f"CarlaDataset(name={self.name}, n_instances={len(self.instances)})"

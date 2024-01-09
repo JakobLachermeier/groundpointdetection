@@ -255,8 +255,9 @@ class PadHull(BaseEstimator, TransformerMixin):
         for i, hull in enumerate(X):
             hull = np.array(hull)
             to_pad = self.n_points - hull.shape[0]
-            assert (to_pad >= 0)  # "Can't remove points yet."
-            if to_pad > 0:
+            if to_pad < 0:
+                hull = hull[:self.n_points]
+            elif to_pad > 0:
                 point_indices = np.random.randint(
                     0, hull.shape[0] - 2, size=to_pad)
                 p1s = hull[point_indices]
