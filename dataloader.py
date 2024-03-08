@@ -6,6 +6,7 @@ import logging
 import cv2
 
 from torch.utils.data import Dataset
+import torch
 from PIL import Image
 import numpy as np
 import numpy.typing as npt
@@ -30,7 +31,7 @@ DatasetName:
 """
 
 
-@dataclass(frozen=True)
+#@dataclass(frozen=True)
 class Instance:
     id: int  # vehicle id from carla
     ts: int  # timestamp should also be the image name in seg, pv and tv folders
@@ -312,10 +313,10 @@ class CarlaDataset(Dataset): # type: ignore
         instance = self.instances[index]
         if self.transform:
             instance = self.transform(instance)
-        psi_vector = instance.psi_pv - instance.gcp_pv
-        normalized_psi_vector = psi_vector / np.linalg.norm(psi_vector)
-
-        return instance.hull_pv, instance.gcp_pv, normalized_psi_vector
+        return instance
+        #normalized_psi_vector = psi_vector / np.linalg.norm(psi_vector)
+        #psi_vector = instance.psi_pv - instance.gcp_pv
+        return torch.tensor(instance.hull_pv), torch.tensor(instance.gcp_pv), #normalized_psi_vector
 
     def __repr__(self) -> str:
         return f"CarlaDataset(name={self.name}, n_instances={len(self.instances)})"
